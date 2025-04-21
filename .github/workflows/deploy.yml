@@ -1,0 +1,48 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          known_hosts: unnecessary
+          if_key_exists: replace
+
+      - name: Adding Known Hosts
+        run: ssh-keyscan -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Test SSH Connection
+        run: ssh -v -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo Connection successful"
+
+      - name: Deploy to VPS
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "mkdir -p ~/geca-files"
+          rsync -avz -e "ssh -p ${{ secrets.SSH_PORT }}" --exclude='.git/' --exclude='.github/' --exclude='.env' ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/geca-files/
+
+      - name: Create .env file
+        run: |
+          ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cat > ~/geca-files/.env << 'EOL'
+          API_KEY=${{ secrets.API_KEY }}
+          FILES_DIR=/var/www/public.losbarryachis.fr/public/shared
+          REDIS_URL=redis://redis:6379/0
+          SECRET_KEY=${{ secrets.SECRET_KEY }}
+          EOL"
+
+      - name: Connect to VPS and stop containers
+        run: ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd ~/geca-files && docker compose down || true"
+
+      - name: Build containers
+        run: ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd ~/geca-files && docker compose build"
+
+      - name: Start containers
+        run: ssh -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd ~/geca-files && docker compose up -d"
