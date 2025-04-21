@@ -11,4 +11,4 @@ RUN mkdir -p /var/www/public.losbarryachis.fr/public/shared
 
 EXPOSE 5000
 
-CMD ["python", "simple_app.py"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
