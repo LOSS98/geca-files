@@ -10,8 +10,9 @@ import shutil
 from pathlib import Path
 import time
 from dotenv import load_dotenv
-from celery import Celery
 import logging
+import threading
+import uvicorn
 
 load_dotenv()
 
@@ -23,11 +24,7 @@ API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     raise ValueError("API_KEY is not defined in the .env file")
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-
 os.makedirs(FILES_DIR, exist_ok=True)
-
-celery_app = Celery("file_tasks", broker=REDIS_URL)
 
 app = FastAPI(
     title="File Management API",
@@ -47,21 +44,24 @@ api_key_header = APIKeyHeader(name="X-API-KEY")
 
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'webm', 'zip', 'doc', 'docx', 'xls', 'xlsx'}
 
+def background_task(func, *args, **kwargs):
+    thread = threading.Thread(target=func, args=args, kwargs=kwargs)
+    thread.daemon = True
+    thread.start()
+    return thread
 
 def is_allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
 
 def verify_api_key(api_key: str = Security(api_key_header)):
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return api_key
 
-
-@celery_app.task
 def process_file_upload(file_path: str, original_filename: str):
     try:
         logger.info(f"Processing file: {original_filename}")
+        # Simuler un traitement
         time.sleep(2)
         logger.info(f"File processed successfully: {original_filename}")
         return {"status": "success", "file": original_filename}
@@ -69,8 +69,6 @@ def process_file_upload(file_path: str, original_filename: str):
         logger.error(f"Error processing file {original_filename}: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-
-@celery_app.task
 def cleanup_temp_files(days=1):
     try:
         cutoff_time = time.time() - (days * 86400)
@@ -91,31 +89,25 @@ def cleanup_temp_files(days=1):
         logger.error(f"Error cleaning up temp files: {str(e)}")
         return {"status": "error", "message": str(e)}
 
-
 class FileListResponse(BaseModel):
     data: List[Dict[str, Any]]
-
 
 class FileResponse(BaseModel):
     filename: str
     path: str
     status: str
 
-
 class StatusResponse(BaseModel):
     status: str
     message: str
-
 
 @app.get("/")
 def home(api_key: str = Depends(verify_api_key)):
     return {"message": "File Management API is running", "status": 200}
 
-
 @app.get("/health")
 async def health_check(api_key: str = Depends(verify_api_key)):
     return {"status": "healthy"}
-
 
 @app.get("/files", response_model=FileListResponse)
 async def list_files(
@@ -153,7 +145,6 @@ async def list_files(
             })
 
     return {"data": files}
-
 
 @app.post("/files/upload", response_model=FileResponse)
 async def upload_file(
@@ -193,13 +184,12 @@ async def upload_file(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        process_file_upload.delay(str(file_path), filename)
+        background_task(process_file_upload, str(file_path), filename)
 
         return {"filename": filename, "path": str(file_path.relative_to(base_dir)), "status": "success"}
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
-
 
 @app.get("/files/{file_path:path}")
 async def download_file(
@@ -216,7 +206,6 @@ async def download_file(
         raise HTTPException(status_code=404, detail="File not found")
 
     return FileResponse(path=str(full_path), filename=full_path.name)
-
 
 @app.delete("/files/{file_path:path}", response_model=StatusResponse)
 async def delete_file(
@@ -239,8 +228,12 @@ async def delete_file(
         shutil.rmtree(full_path)
         return {"status": "success", "message": f"Directory {file_path} deleted"}
 
+def schedule_cleanup():
+    while True:
+        time.sleep(86400)  # 24 heures
+        cleanup_temp_files()
+
+background_task(schedule_cleanup)
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=5000)

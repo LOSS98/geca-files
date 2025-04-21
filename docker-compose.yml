@@ -1,7 +1,7 @@
 services:
-  api:
+  app:
     build: .
-    container_name: file-api
+    container_name: file-app
     restart: always
     ports:
       - "7000:5000"
@@ -10,28 +10,3 @@ services:
       - /var/www/public.losbarryachis.fr/public/shared:/var/www/public.losbarryachis.fr/public/shared
     environment:
       - TZ=Europe/Paris
-    depends_on:
-      - redis
-
-  worker:
-    build: .
-    container_name: file-worker
-    restart: always
-    command: celery -A app worker --loglevel=info
-    volumes:
-      - ./.env:/app/.env
-      - /var/www/public.losbarryachis.fr/public/shared:/var/www/public.losbarryachis.fr/public/shared
-    environment:
-      - TZ=Europe/Paris
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:alpine
-    container_name: file-redis
-    restart: always
-    volumes:
-      - redis-data:/data
-
-volumes:
-  redis-data:
