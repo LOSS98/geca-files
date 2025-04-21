@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi import Security
@@ -9,6 +9,7 @@ import os
 import shutil
 from pathlib import Path
 import time
+import mimetypes
 from dotenv import load_dotenv
 import logging
 import threading
@@ -42,7 +43,9 @@ app.add_middleware(
 
 api_key_header = APIKeyHeader(name="X-API-KEY")
 
-ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'webm', 'zip', 'doc', 'docx', 'xls', 'xlsx'}
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'webm', 'zip', 'doc', 'docx', 'xls', 'xlsx',
+                      'mp3', 'wav', 'csv', 'json', 'md', 'html', 'css', 'js'}
+
 
 def background_task(func, *args, **kwargs):
     thread = threading.Thread(target=func, args=args, kwargs=kwargs)
@@ -50,24 +53,27 @@ def background_task(func, *args, **kwargs):
     thread.start()
     return thread
 
+
 def is_allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 def verify_api_key(api_key: str = Security(api_key_header)):
     if api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API Key")
     return api_key
 
+
 def process_file_upload(file_path: str, original_filename: str):
     try:
         logger.info(f"Processing file: {original_filename}")
-        # Simuler un traitement
         time.sleep(2)
         logger.info(f"File processed successfully: {original_filename}")
         return {"status": "success", "file": original_filename}
     except Exception as e:
         logger.error(f"Error processing file {original_filename}: {str(e)}")
         return {"status": "error", "message": str(e)}
+
 
 def cleanup_temp_files(days=1):
     try:
@@ -89,25 +95,36 @@ def cleanup_temp_files(days=1):
         logger.error(f"Error cleaning up temp files: {str(e)}")
         return {"status": "error", "message": str(e)}
 
+
 class FileListResponse(BaseModel):
     data: List[Dict[str, Any]]
+
 
 class FileResponse(BaseModel):
     filename: str
     path: str
     status: str
 
+
 class StatusResponse(BaseModel):
     status: str
     message: str
+
+
+class RenameFileRequest(BaseModel):
+    old_path: str
+    new_name: str
+
 
 @app.get("/")
 def home(api_key: str = Depends(verify_api_key)):
     return {"message": "File Management API is running", "status": 200}
 
+
 @app.get("/health")
 async def health_check(api_key: str = Depends(verify_api_key)):
     return {"status": "healthy"}
+
 
 @app.get("/files", response_model=FileListResponse)
 async def list_files(
@@ -145,6 +162,7 @@ async def list_files(
             })
 
     return {"data": files}
+
 
 @app.post("/files/upload", response_model=FileResponse)
 async def upload_file(
@@ -191,10 +209,12 @@ async def upload_file(
         logger.error(f"Error uploading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
 
+
 @app.get("/files/{file_path:path}")
 async def download_file(
         file_path: str,
-        api_key: str = Depends(verify_api_key)
+        api_key: str = Depends(verify_api_key),
+        inline: bool = Query(False)
 ):
     base_dir = Path(FILES_DIR)
     full_path = base_dir / file_path
@@ -205,7 +225,19 @@ async def download_file(
     if not full_path.exists() or not full_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FileResponse(path=str(full_path), filename=full_path.name)
+    mimetype, _ = mimetypes.guess_type(str(full_path))
+    if mimetype is None:
+        mimetype = "application/octet-stream"
+
+    disposition = "inline" if inline else "attachment"
+
+    return FileResponse(
+        path=str(full_path),
+        filename=full_path.name,
+        media_type=mimetype,
+        headers={"Content-Disposition": f"{disposition}; filename={full_path.name}"}
+    )
+
 
 @app.delete("/files/{file_path:path}", response_model=StatusResponse)
 async def delete_file(
@@ -221,17 +253,54 @@ async def delete_file(
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
-    if full_path.is_file():
-        os.remove(full_path)
-        return {"status": "success", "message": f"File {file_path} deleted"}
-    elif full_path.is_dir():
-        shutil.rmtree(full_path)
-        return {"status": "success", "message": f"Directory {file_path} deleted"}
+    try:
+        if full_path.is_file():
+            os.remove(full_path)
+            return {"status": "success", "message": f"File {file_path} deleted"}
+        elif full_path.is_dir():
+            shutil.rmtree(full_path)
+            return {"status": "success", "message": f"Directory {file_path} deleted"}
+    except Exception as e:
+        logger.error(f"Error deleting file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+
+
+@app.post("/files/rename", response_model=StatusResponse)
+async def rename_file(
+        rename_request: RenameFileRequest,
+        api_key: str = Depends(verify_api_key)
+):
+    base_dir = Path(FILES_DIR)
+    old_path = base_dir / rename_request.old_path
+
+    if not str(old_path).startswith(str(base_dir)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not old_path.exists():
+        raise HTTPException(status_code=404, detail="File or directory not found")
+
+    parent_dir = old_path.parent
+    new_path = parent_dir / rename_request.new_name
+
+    if new_path.exists():
+        raise HTTPException(status_code=400, detail="A file or directory with this name already exists")
+
+    try:
+        old_path.rename(new_path)
+        if old_path.is_file():
+            return {"status": "success", "message": f"File renamed successfully"}
+        else:
+            return {"status": "success", "message": f"Directory renamed successfully"}
+    except Exception as e:
+        logger.error(f"Error renaming file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error renaming file: {str(e)}")
+
 
 def schedule_cleanup():
     while True:
         time.sleep(86400)  # 24 heures
         cleanup_temp_files()
+
 
 background_task(schedule_cleanup)
 
