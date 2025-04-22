@@ -44,7 +44,7 @@ app.add_middleware(
 api_key_header = APIKeyHeader(name="X-API-KEY")
 
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'mp4', 'webm', 'zip', 'doc', 'docx', 'xls', 'xlsx',
-                      'mp3', 'wav', 'csv', 'json', 'md', 'html', 'css', 'js'}
+                      'mp3', 'wav', 'csv', 'json', 'md', 'html', 'css', 'js', 'ttf'}
 
 
 def background_task(func, *args, **kwargs):
